@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
@@ -31,8 +32,185 @@ def book_job(job):
         .execute()
     )
 
+def overlaps(candidate_start, candidate_end, booked_start, booked_end):
 
-def get_booked_times():
+    print("=" * 60)
+
+    print("candidate_start:", repr(candidate_start))
+    print("candidate_end:  ", repr(candidate_end))
+    print("booked_start:   ", repr(booked_start))
+    print("booked_end:     ", repr(booked_end))
+
+    print("candidate tz:", candidate_start.tzinfo)
+    print("booked tz:   ", booked_start.tzinfo)
+
+    print("candidate aware?", candidate_start.tzinfo is not None)
+    print("booked aware?   ", booked_start.tzinfo is not None)
+
+    return (
+        candidate_start < booked_end
+        and candidate_end > booked_start
+    )
+
+def matches_weekday(dt, weekdays):
+
+    if not weekdays:
+        return True
+
+    return dt.isoweekday() in weekdays
+
+def matches_time_of_day(dt, preference):
+
+    if preference is None:
+        return True
+
+    preference = preference.lower()
+
+    hour = dt.hour
+
+    if preference == "any":
+        return True
+
+    if preference == "morning":
+        return 8 <= hour < 12
+
+    if preference == "afternoon":
+        return 12 <= hour < 17
+
+    if preference == "evening":
+        return 17 <= hour < 21
+
+    return True
+
+def estimate_duration(description: str):
+
+    description = description.lower()
+
+    if "ceiling fan" in description:
+        return 90
+
+    if "toilet" in description:
+        return 60
+
+    if "faucet" in description:
+        return 45
+
+    if "sink" in description:
+        return 60
+
+    if "light" in description:
+        return 45
+
+    if "door" in description:
+        return 30
+
+    return 60
+
+def search_schedule(
+    start_date,
+    end_date,
+    duration_minutes,
+    weekdays=None,
+    time_of_day="any",
+    max_results=5
+):
+
+    booked = get_booked_jobs()
+
+    
+
+    start = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+    end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+    print(start)
+    print(start.tzinfo)
+    results = []
+
+    current_day = start.date()
+
+    while current_day <= end.date():
+
+        candidate = datetime.combine(
+            current_day,
+            datetime.min.time()
+        ).replace(
+            hour=8,
+            tzinfo=start.tzinfo
+        )
+
+        end_of_day = candidate.replace(hour=17)
+
+        while candidate + timedelta(minutes=duration_minutes) <= end_of_day:
+
+            if not matches_weekday(candidate, weekdays):
+                candidate += timedelta(minutes=30)
+                continue
+
+            if not matches_time_of_day(candidate, time_of_day):
+                candidate += timedelta(minutes=30)
+                continue
+
+            candidate_end = candidate + timedelta(
+                minutes=duration_minutes
+            )
+
+            conflict = False
+
+            for job in booked:
+
+                if overlaps(
+                    candidate,
+                    candidate_end,
+                    job["start"],
+                    job["end"]
+                ):
+                    conflict = True
+                    break
+
+            if not conflict:
+
+                results.append(
+                    candidate.isoformat()
+                )
+
+                if len(results) >= max_results:
+                    return results
+
+            candidate += timedelta(minutes=30)
+
+        current_day += timedelta(days=1)
+
+    return results
+
+def get_booked_jobs():
+
+    response = (
+        supabase
+        .table("jobs")
+        .select("scheduled_start_time,duration_minutes")
+        .execute()
+    )
+
+    booked = []
+
+    for row in response.data:
+
+        if row["scheduled_start_time"] is None:
+            continue
+
+        start = datetime.fromisoformat(
+            row["scheduled_start_time"].replace("Z", "+00:00")
+        )
+
+        duration = row["duration_minutes"] or 60
+
+        end = start + timedelta(minutes=duration)
+
+        booked.append({
+            "start": start,
+            "end": end
+        })
+
+    return booked
 
     response = (
         supabase
@@ -64,79 +242,27 @@ def handle_tool(tool_name, tool_id, args):
     print("=" * 60)
 
 
-    if tool_name == "get_availability":
 
-        requested_time = args.get("requested_time")
-
-        response = (
-            supabase
-            .table("jobs")
-            .select("scheduled_start_time")
-            .eq("scheduled_start_time", requested_time)
-            .execute()
-        )
-
-        available = len(response.data) == 0
-
-        return {
-            "results": [
-                {
-                    "toolCallId": tool_id,
-                    "result": {
-                        "available": available,
-                        "requested_time": requested_time
-                    }
-                }
-            ]
-        }
     # ------------------------------------------------
     # search_schedule
     # ------------------------------------------------
 
     if tool_name == "search_schedule":
 
-        from datetime import datetime, timedelta
+        slots = search_schedule(
 
-        start = datetime.fromisoformat(
-            args["start_range"].replace("Z", "+00:00")
+            start_date=args["start_date"],
+
+            end_date=args["end_date"],
+
+            duration_minutes=args["duration_minutes"],
+
+            weekdays=args.get("weekdays"),
+
+            time_of_day=args.get("time_of_day", "any"),
+
+            max_results=args.get("max_results", 5)
         )
-
-        end = datetime.fromisoformat(
-            args["end_range"].replace("Z", "+00:00")
-        )
-
-        max_results = args.get("max_results", 3)
-
-        booked = (
-            supabase
-            .table("jobs")
-            .select("scheduled_start_time")
-            .gte("scheduled_start_time", start.isoformat())
-            .lte("scheduled_start_time", end.isoformat())
-            .execute()
-        )
-
-        booked_times = {
-            row["scheduled_start_time"]
-            for row in booked.data
-            if row["scheduled_start_time"]
-        }
-
-        slots = []
-
-        current = start
-
-        while current <= end:
-
-            if 8 <= current.hour < 17:
-
-                if current.isoformat() not in booked_times:
-
-                    slots.append(current.isoformat())
-
-            current += timedelta(hours=1)
-
-        slots = slots[:max_results]
 
         return {
             "results": [
@@ -149,49 +275,73 @@ def handle_tool(tool_name, tool_id, args):
             ]
         }
 
-
     # ------------------------------------------------
     # book_job
     # ------------------------------------------------
 
     if tool_name == "book_job":
 
-        scheduled_time = args.get("scheduled_time")
+        start = datetime.fromisoformat(
+            args["scheduled_time"].replace("Z", "+00:00")
+        )
 
-        existing = (
+        duration = estimate_duration(
+            args["description"]
+        )
+
+        end = start + timedelta(minutes=duration)
+
+        jobs = (
             supabase
             .table("jobs")
-            .select("id")
-            .eq("scheduled_start_time", scheduled_time)
+            .select("scheduled_start_time, scheduled_end_time")
             .execute()
         )
 
-        if len(existing.data) > 0:
+        for job in jobs.data:
 
-            return {
-                "results": [
-                    {
-                        "toolCallId": tool_id,
-                        "result": {
-                            "success": False,
-                            "message": "That appointment has already been booked."
+            if (
+                job["scheduled_start_time"] is None
+                or job["scheduled_end_time"] is None
+            ):
+                continue
+
+            existing_start = datetime.fromisoformat(
+                job["scheduled_start_time"].replace("Z", "+00:00")
+            )
+
+            existing_end = datetime.fromisoformat(
+                job["scheduled_end_time"].replace("Z", "+00:00")
+            )
+
+            if start < existing_end and end > existing_start:
+
+                return {
+                    "results": [
+                        {
+                            "toolCallId": tool_id,
+                            "result": {
+                                "success": False,
+                                "message": "That time overlaps an existing appointment."
+                            }
                         }
-                    }
-                ]
-            }
+                    ]
+                }
 
         job = {
 
-            "customer_name": args.get("customer_name"),
-            "phone_number": args.get("phone_number"),
-            "address": args.get("address"),
-            "description": args.get("description"),
+            "customer_name": args["customer_name"],
+            "phone_number": args["phone_number"],
+            "address": args["address"],
+            "description": args["description"],
 
-            "scheduled_start_time": scheduled_time,
+            "scheduled_start_time": start.isoformat(),
+            "scheduled_end_time": end.isoformat(),
+
+            "duration_minutes": duration,
 
             "status": "Booked",
             "category": "General",
-            "duration_minutes": 60,
             "ai_confidence": 1.0
         }
 
@@ -208,13 +358,35 @@ def handle_tool(tool_name, tool_id, args):
                     "toolCallId": tool_id,
                     "result": {
                         "success": True,
-                        "message": "Appointment booked successfully.",
                         "job": inserted.data[0]
                     }
                 }
             ],
             "endCall": True
         }
+    
+    
+    # ------------------------------------------------
+    # estimate_duration
+    # ------------------------------------------------
+
+    if tool_name == "estimate_duration":
+
+        duration = estimate_duration(
+            args.get("description", "")
+        )
+
+        return {
+            "results": [
+                {
+                    "toolCallId": tool_id,
+                    "result": {
+                        "duration_minutes": duration
+                    }
+                }
+            ]
+        }
+
     # ------------------------------------------------
     # Unknown Tool
     # ------------------------------------------------
