@@ -1,3 +1,230 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: .env, .gitignore, ai.py, db.py, main.py, note.md, prompt.txt, README.md, test_db.py, test_server.py, test.py, todo.md
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+ai.py
+db.py
+main.py
+note.md
+prompt.txt
+README.md
+test_db.py
+test_server.py
+test.py
+todo.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+*.env
+</file>
+
+<file path="ai.py">
+import os
+import json
+from dotenv import load_dotenv
+from google import genai
+from pathlib import Path
+
+
+load_dotenv()
+BUSINESS_PROMPT = Path("prompt.txt").read_text()
+
+client = genai.Client(
+    api_key=os.getenv("GEMINI_API_KEY")
+)
+
+def estimate_duration(description: str):
+
+    prompt = f"""
+    {BUSINESS_PROMPT}
+
+    Customer description:
+
+    "{description}"
+
+    Estimate the duration.
+
+    Return JSON:
+
+    {{
+        "duration_minutes": integer,
+        "confidence": float,
+        "reason": "..."
+    }}
+    """
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    print("========== GEMINI RESPONSE ==========")
+    print(repr(response.text))
+    print("=====================================")
+
+    
+    text = response.text.strip()
+
+    # Remove markdown code fences if present
+    if text.startswith("```"):
+        lines = text.splitlines()
+
+        # Remove first line (```json)
+        lines = lines[1:]
+
+        # Remove last line (```)
+        if lines[-1].startswith("```"):
+            lines = lines[:-1]
+
+        text = "\n".join(lines)
+
+    return json.loads(text)
+</file>
+
+<file path="prompt.txt">
+
+</file>
+
+<file path="db.py">
+import os
+from supabase import create_client, Client
+
+# Use environment variables for security! 
+# You can use a .env file for these.
+SUPABASE_URL = "https://givnpzimnxbhqkgdoxic.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdpdm5wemltbnhiaHFrZ2RveGljIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYzODIzMCwiZXhwIjoyMDk3MjE0MjMwfQ.sTb5cApsApjenNjoE5kqKLMBsi1OxPxrI1sC9dOvQR4"
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+</file>
+
+<file path="test_db.py">
+from db import supabase
+
+try:
+    data = {"job_type": "Kitchen", "start_time": "2026-06-25T10:00:00Z", "duration_minutes": 30, "comment": "Direct test"}
+    response = supabase.table("jobs").insert(data).execute()
+    print("Database write successful!")
+except Exception as e:
+    print(f"Database Error: {e}")
+</file>
+
+<file path="test_server.py">
+import requests
+
+# This simulates what Vapi sends to your server
+mock_payload = {
+    "message": {
+        "type": "function-call",
+        "functionCall": {
+            "name": "book_job",
+            "id": "test-123",
+            "parameters": {
+                "job_type": "Kitchen",
+                "start_time": "2026-06-25T10:00:00Z",
+                "duration_minutes": 60,
+                "comment": "Testing the system"
+            }
+        }
+    }
+}
+
+response = requests.post("http://127.0.0.1:8000/vapi-webhook", json=mock_payload)
+print(f"Status Code: {response.status_code}")
+print(f"Response: {response.json()}")
+</file>
+
+<file path="test.py">
+from pprint import pprint
+
+from main import (
+    book_job,
+    get_availability
+)
+
+
+def test_availability():
+
+    print("=" * 50)
+    print("Testing availability")
+
+    available = get_availability(
+        "2026-06-30T14:00:00+00:00"
+    )
+
+    print("Available:", available)
+
+
+def test_booking():
+
+    print("=" * 50)
+    print("Testing booking")
+
+    job = {
+        "customer_name": "John Smith",
+        "phone_number": "555-1234",
+        "address": "123 Main Street",
+        "category": "General",
+        "description": "Testing insert",
+        "scheduled_start_time": "2026-06-30T14:00:00"
+    }
+
+    result = book_job(job)
+
+    pprint(result)
+
+
+if __name__ == "__main__":
+
+    test_availability()
+
+    test_booking()
+
+    print("\nFinished.")
+</file>
+
+<file path="main.py">
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
@@ -542,3 +769,133 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000
     )
+</file>
+
+<file path="note.md">
+first run 
+uvicorn main:app --reload
+next run 
+lt --port 8000
+
+then copy the 
+
+
+
+
+
+
+
+
+https://fine-keys-melt.loca.lt
+
+
+
+
+
+
+
+
+
+
+
+
+/vapi-webhook
+
+
+
+
+
+
+
+
+
+
+to vapi tools
+</file>
+
+<file path="README.md">
+---
+
+### 1. Voice AI & Telephony Layer
+*Costs here are mostly "Pay-as-you-go" based on call duration.*
+
+#### Option A: All-in-One Platforms (Vapi.ai, Retell AI)
+*   **Platform Fee:** ~**$0.05 to $0.10 per minute**.
+*   **Phone Number:** ~$1.00 - $2.00 per month per number.
+*   **Total Estimate:** If a freelancer gets 100 minutes of calls a month, you pay **$10–$15/month** for that user.
+
+#### Option B: Modular Approach (DIY)
+*   **Telephony (Twilio):** ~$0.013/min (inbound) + $1.15/month for the phone number.
+*   **STT (Deepgram):** ~$0.0043/min.
+*   **TTS (ElevenLabs):** This is the expensive part. ~$0.30 per 1,000 characters. In a conversation, this averages to **$0.15–$0.25/min**.
+*   **Total Estimate:** Roughly **$0.20–$0.30 per minute**. *Note: While "DIY" sounds cheaper, using premium voices like ElevenLabs actually makes it more expensive than the All-in-One platforms who get bulk discounts.*
+
+---
+
+### 2. Scheduling & Calendar Engine
+*This is the "Storage and Logic" for the appointments.*
+
+*   **Nylas:** They have moved toward "Enterprise" pricing. Expect to pay a platform fee (often **$500+/month**) plus a per-account fee (around **$1–$2 per freelancer**). Best for high-security hospital-style needs.
+*   **Cronofy:** Similar to Nylas, but slightly more developer-friendly. Pricing is usually custom, but starts around **$0.60 - $1.00 per connected user** per month with a minimum monthly spend.
+*   **Cal.com (API):**
+    *   **Open Source:** Free (if you self-host on your own server).
+    *   **Hosted API:** **$0.05 per booking** or a flat fee per "Atom" (user). This is the most cost-effective for a startup.
+
+---
+
+### 3. The "Brain" (LLM Intelligence)
+*This is what the AI uses to think and talk.*
+
+*   **OpenAI (GPT-4o):** Based on tokens (words). A typical 5-minute phone call uses about 2,000–3,000 tokens.
+    *   **Cost:** Roughly **$0.01 – $0.03 per call**.
+*   **Groq (Llama 3):** If you want speed and lower costs, Groq is significantly cheaper than OpenAI.
+    *   **Cost:** Roughly **$0.001 per call** (virtually free at small scales).
+
+---
+
+### 4. Backend & Hosting (The Infrastructure)
+*Fixed monthly costs to keep your website and database running.*
+
+*   **Supabase (Database & Auth):**
+    *   **Free Tier:** Good for development.
+    *   **Pro Tier:** **$25/month** (covers your first few hundred users).
+*   **Vercel (Frontend Hosting):**
+    *   **Pro Plan:** **$20/month**.
+*   **Postmark/Resend (Transactional Emails/receipts):**
+    *   **Free** for first 3,000 emails, then **$15/month**.
+
+---
+
+### Summary Cost Table (Per User/Freelancer)
+
+To give you a "Unit Economic" model, here is what it costs you to support **one freelancer** who receives **50 calls a month** (avg 2 mins each = 100 mins total):
+
+| Component | Service Choice | Monthly Cost (Est.) |
+| :--- | :--- | :--- |
+| **Phone Number** | Twilio/Vapi | $1.15 |
+| **Voice Processing** | Vapi.ai (including STT/TTS) | $15.00 |
+| **Intelligence** | GPT-4o | $1.50 |
+| **Calendar Sync** | Cal.com API | $2.50 |
+| **Total Variable Cost** | | **$20.15 / month** |
+
+### Initial Startup "Burn" (Fixed Monthly Costs)
+Before you have your first customer, you will likely spend:
+*   **Infrastructure (Supabase/Vercel):** $45.00/month.
+*   **Development Tools/Domains:** ~$10.00/month.
+*   **Total Fixed:** **~$55.00/month.**
+
+### Advice on Pricing your Service:
+If your cost is ~$20 per freelancer, you should charge them **$49 to $99 per month**. 
+*   **The "Hospital" Value:** Hospitals pay thousands for this. A freelancer will gladly pay $50/month if it saves them from answering the phone while they are working with a client.
+*   **Strategy:** Offer a "Lite" plan that is just a dashboard ($15/mo) and a "Pro" plan that includes the AI Receptionist ($50/mo + usage fees).
+</file>
+
+<file path="todo.md">
+自定义可用时间（不要约到freelancer下班的时候）
+知道什么时候挂电话
+预设工作列表
+花费时间预估（做成纯本地逻辑）
+time_of_day or weekdays
+</file>
+
+</files>
