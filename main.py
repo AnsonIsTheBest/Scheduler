@@ -1,3 +1,5 @@
+import os
+from fastapi import HTTPException, Request
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
@@ -407,6 +409,10 @@ def handle_tool(tool_name, tool_id, args):
 @app.post("/vapi-webhook")
 async def vapi_webhook(request: Request):
 
+    secret = request.headers.get("X-Webhook-Secret")
+
+    if secret != os.getenv("WEBHOOK_SECRET"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     raw = await request.body()
 
     print("\n")
