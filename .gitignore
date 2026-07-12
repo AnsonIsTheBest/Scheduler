@@ -1,1 +1,3 @@
 *.env
+*.xml
+repomix-output.xml
