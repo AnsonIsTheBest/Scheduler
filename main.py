@@ -7,6 +7,7 @@ import uvicorn
 import json
 from db import supabase
 from ai import estimate_duration
+from routes_dashboard import router as dashboard_router
 
 app = FastAPI()
 
@@ -21,6 +22,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(dashboard_router, prefix="/api")
 
 # ---------------------------------------------------
 # Database Helpers
