@@ -10,14 +10,17 @@ from ai import estimate_duration
 from routes_dashboard import router as dashboard_router
 
 app = FastAPI()
-
+app.include_router(dashboard_router, prefix="/api")
 # ---------------------------------------------------
 # CORS (helps when using the Vapi Test Tool)
 # ---------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://your-app.vercel.app",   # your real Vercel domain
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
