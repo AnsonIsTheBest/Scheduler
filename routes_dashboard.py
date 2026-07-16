@@ -1,36 +1,24 @@
 """
-Dashboard-facing REST endpoints.
+Dashboard-facing REST endpoints — now company-scoped.
 
-Everything in here is read-only and serves the Next.js frontend — it has
-nothing to do with the Vapi webhook / tool-call flow in main.py, so it's
-kept in its own router rather than bloating that file further.
+Every route depends on get_current_company_id (tenant.py), which itself
+depends on require_auth (auth.py). A request with a valid JWT but no
+company_members row gets a 403, not an empty result — that distinction
+matters for debugging ("no data" vs "not onboarded" look identical
+otherwise).
 
-Mount in main.py with:
-
-    from routes_dashboard import router as dashboard_router
-    app.include_router(dashboard_router, prefix="/api")
-
-Status values: the booking flow (main.py) writes "Booked" to the jobs
-table. The frontend expects "scheduled" | "in_progress" | "completed" |
-"cancelled". normalize_status() below is the one place that translates
-between them — update it here, not in the frontend, if new statuses
-get introduced on the backend.
-
-Customers: there is no customers table yet. Customers are derived by
-grouping jobs on phone_number, which doubles as a stable customer id
-(digits only, so it's URL-safe). This is a reasonable bridge for now;
-if a real customers table gets added later, these endpoints are the
-only place that needs to change — the frontend already treats
-customer_id as an opaque string.
+Customers are still derived from jobs (no customers table), same as
+before — just filtered to one company's jobs now instead of all of them.
 """
 
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import supabase
+from tenant import get_current_company_id
 
 router = APIRouter()
 
@@ -79,8 +67,13 @@ def serialize_job(row: dict) -> dict:
     }
 
 
-def fetch_all_jobs() -> list[dict]:
-    response = supabase.table("jobs").select("*").execute()
+def fetch_all_jobs(company_id: str) -> list[dict]:
+    response = (
+        supabase.table("jobs")
+        .select("*")
+        .eq("company_id", company_id)
+        .execute()
+    )
     return [serialize_job(row) for row in response.data]
 
 
@@ -90,11 +83,12 @@ def fetch_all_jobs() -> list[dict]:
 
 @router.get("/jobs")
 async def list_jobs(
-    start: str | None = Query(default=None, description="ISO date, inclusive"),
-    end: str | None = Query(default=None, description="ISO date, inclusive"),
+    start: str | None = Query(default=None),
+    end: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    company_id: str = Depends(get_current_company_id),
 ):
-    jobs = fetch_all_jobs()
+    jobs = fetch_all_jobs(company_id)
 
     if start:
         start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
@@ -120,12 +114,12 @@ async def list_jobs(
 
 
 @router.get("/jobs/today")
-async def jobs_today():
+async def jobs_today(company_id: str = Depends(get_current_company_id)):
     now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
 
-    jobs = fetch_all_jobs()
+    jobs = fetch_all_jobs(company_id)
     todays = [
         j for j in jobs
         if j["scheduled_start_time"]
@@ -136,14 +130,17 @@ async def jobs_today():
 
 
 @router.get("/jobs/upcoming")
-async def jobs_upcoming(days: int = Query(default=7, ge=1, le=30)):
+async def jobs_upcoming(
+    days: int = Query(default=7, ge=1, le=30),
+    company_id: str = Depends(get_current_company_id),
+):
     now = datetime.now(timezone.utc)
     tomorrow_start = (now + timedelta(days=1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     end = tomorrow_start + timedelta(days=days)
 
-    jobs = fetch_all_jobs()
+    jobs = fetch_all_jobs(company_id)
     upcoming = [
         j for j in jobs
         if j["scheduled_start_time"]
@@ -154,9 +151,14 @@ async def jobs_upcoming(days: int = Query(default=7, ge=1, le=30)):
 
 
 @router.get("/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, company_id: str = Depends(get_current_company_id)):
     response = (
-        supabase.table("jobs").select("*").eq("id", job_id).limit(1).execute()
+        supabase.table("jobs")
+        .select("*")
+        .eq("id", job_id)
+        .eq("company_id", company_id)  # prevents cross-tenant lookup by guessing an id
+        .limit(1)
+        .execute()
     )
     if not response.data:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -168,11 +170,14 @@ async def get_job(job_id: str):
 # ---------------------------------------------------
 
 @router.get("/calendar/week")
-async def calendar_week(start: str = Query(..., description="ISO date, Monday of the week")):
+async def calendar_week(
+    start: str = Query(...),
+    company_id: str = Depends(get_current_company_id),
+):
     start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
     end_dt = start_dt + timedelta(days=7)
 
-    jobs = fetch_all_jobs()
+    jobs = fetch_all_jobs(company_id)
     week_jobs = [
         j for j in jobs
         if j["scheduled_start_time"]
@@ -187,20 +192,20 @@ async def calendar_week(start: str = Query(..., description="ISO date, Monday of
 # ---------------------------------------------------
 
 @router.get("/customers")
-async def list_customers():
-    jobs = fetch_all_jobs()
+async def list_customers(company_id: str = Depends(get_current_company_id)):
+    jobs = fetch_all_jobs(company_id)
     grouped: dict[str, list[dict]] = defaultdict(list)
 
     for job in jobs:
         grouped[job["customer_id"]].append(job)
 
     customers = []
-    for customer_id, customer_jobs in grouped.items():
+    for cust_id, customer_jobs in grouped.items():
         customer_jobs.sort(key=lambda j: j["scheduled_start_time"] or "")
         latest = customer_jobs[-1]
         earliest = customer_jobs[0]
         customers.append({
-            "id": customer_id,
+            "id": cust_id,
             "name": latest["customer_name"],
             "phone_number": latest["phone_number"],
             "address": latest["address"],
@@ -214,8 +219,10 @@ async def list_customers():
 
 
 @router.get("/customers/{customer_id}")
-async def get_customer(customer_id: str):
-    jobs = [j for j in fetch_all_jobs() if j["customer_id"] == customer_id]
+async def get_customer(
+    customer_id: str, company_id: str = Depends(get_current_company_id)
+):
+    jobs = [j for j in fetch_all_jobs(company_id) if j["customer_id"] == customer_id]
     if not jobs:
         raise HTTPException(status_code=404, detail="Customer not found")
 
