@@ -175,16 +175,25 @@ async def calendar_week(
     company_id: str = Depends(get_current_company_id),
 ):
     start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
     end_dt = start_dt + timedelta(days=7)
+
+    def _job_start(j):
+        dt = datetime.fromisoformat(j["scheduled_start_time"].replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
 
     jobs = fetch_all_jobs(company_id)
     week_jobs = [
         j for j in jobs
         if j["scheduled_start_time"]
-        and start_dt <= datetime.fromisoformat(j["scheduled_start_time"].replace("Z", "+00:00")) < end_dt
+        and start_dt <= _job_start(j) < end_dt
     ]
     week_jobs.sort(key=lambda j: j["scheduled_start_time"])
     return week_jobs
+
 
 
 # ---------------------------------------------------
