@@ -9,6 +9,7 @@ from db import supabase
 from ai import estimate_duration
 from routes_dashboard import router as dashboard_router
 from routes_settings import router as settings_router
+from routes_settings import get_company_by_vapi_phone_id   # <-- reuse existing helper
 
 app = FastAPI()
 app.include_router(settings_router, prefix="/api")
@@ -34,14 +35,30 @@ app.include_router(dashboard_router, prefix="/api")
 # Database Helpers
 # ---------------------------------------------------
 
-def book_job(job):
+def book_job(job, company_id):
+    job["company_id"] = company_id
+    return supabase.table("jobs").insert(job).execute()
 
-    return (
+
+def get_booked_jobs(company_id):
+    response = (
         supabase
         .table("jobs")
-        .insert(job)
+        .select("scheduled_start_time,duration_minutes")
+        .eq("company_id", company_id)
         .execute()
     )
+
+    booked = []
+    for row in response.data:
+        if row["scheduled_start_time"] is None:
+            continue
+        start = datetime.fromisoformat(row["scheduled_start_time"].replace("Z", "+00:00"))
+        duration = row["duration_minutes"] or 60
+        end = start + timedelta(minutes=duration)
+        booked.append({"start": start, "end": end})
+
+    return booked
 
 def overlaps(candidate_start, candidate_end, booked_start, booked_end):
 
@@ -120,6 +137,7 @@ def estimate_duration(description: str):
 """
 
 def search_schedule(
+    company_id,
     start_date,
     end_date,
     duration_minutes,
@@ -127,8 +145,7 @@ def search_schedule(
     time_of_day="any",
     max_results=5
 ):
-
-    booked = get_booked_jobs()
+    booked = get_booked_jobs(company_id)
 
     
 
@@ -194,62 +211,15 @@ def search_schedule(
 
     return results
 
-def get_booked_jobs():
-
-    response = (
-        supabase
-        .table("jobs")
-        .select("scheduled_start_time,duration_minutes")
-        .execute()
-    )
-
-    booked = []
-
-    for row in response.data:
-
-        if row["scheduled_start_time"] is None:
-            continue
-
-        start = datetime.fromisoformat(
-            row["scheduled_start_time"].replace("Z", "+00:00")
-        )
-
-        duration = row["duration_minutes"] or 60
-
-        end = start + timedelta(minutes=duration)
-
-        booked.append({
-            "start": start,
-            "end": end
-        })
-
-    return booked
-
-    response = (
-        supabase
-        .table("jobs")
-        .select("scheduled_start_time")
-        .execute()
-    )
-
-    print("\nRETURNING TO VAPI:")
-    print(json.dumps(response, indent=2))
-
-    return [
-        row["scheduled_start_time"]
-        for row in response.data
-        if row["scheduled_start_time"] is not None
-    ]
-
 
 # ---------------------------------------------------
 # Tool Handler
 # ---------------------------------------------------
 
-def handle_tool(tool_name, tool_id, args):
+def handle_tool(tool_name, tool_id, args, company_id):
 
     print("\n" + "=" * 60)
-    print("Tool:", tool_name)
+    print("Tool:", tool_name, "| Company:", company_id)
     print("Arguments:")
     print(json.dumps(args, indent=2))
     print("=" * 60)
@@ -263,6 +233,7 @@ def handle_tool(tool_name, tool_id, args):
     if tool_name == "search_schedule":
 
         slots = search_schedule(
+            company_id=company_id,
 
             start_date=args["start_date"],
 
@@ -308,6 +279,7 @@ def handle_tool(tool_name, tool_id, args):
             supabase
             .table("jobs")
             .select("scheduled_start_time, scheduled_end_time")
+            .eq("company_id", company_id)   # <-- scoped
             .execute()
         )
 
@@ -358,6 +330,7 @@ def handle_tool(tool_name, tool_id, args):
             "ai_confidence": 1.0
         }
 
+        job["company_id"] = company_id   # <-- add thi  s line before insert
         inserted = (
             supabase
             .table("jobs")
@@ -445,8 +418,26 @@ async def vapi_webhook(request: Request):
 
     message = payload.get("message", {})
     message_type = message.get("type")
-
+    call = message.get("call", {})
+    phone_number_id = call.get("phoneNumberId")
     print("Message Type:", message_type)
+
+    if not phone_number_id:
+        print("ERROR: no phoneNumberId in webhook payload — cannot resolve tenant")
+        return {"results": [{
+            "toolCallId": tc.get("id", "unknown"),
+            "result": {"success": False, "message": "Unable to identify business for this call."}
+        } for tc in message.get("toolCalls", [])]}
+
+    company = get_company_by_vapi_phone_id(phone_number_id)
+    if not company:
+        print(f"ERROR: no company found for phoneNumberId={phone_number_id}")
+        return {"results": [{
+            "toolCallId": tc.get("id", "unknown"),
+            "result": {"success": False, "message": "Unable to identify business for this call."}
+        } for tc in message.get("toolCalls", [])]}
+
+    company_id = company["id"]
 
     # ------------------------------------------------
     # NEW VAPI FORMAT
@@ -469,7 +460,8 @@ async def vapi_webhook(request: Request):
             response = handle_tool(
                 tool_name,
                 tool_id,
-                args
+                args,
+                company_id,
             )
 
             results.extend(response["results"])
@@ -489,7 +481,8 @@ async def vapi_webhook(request: Request):
         return handle_tool(
             func["name"],
             func["id"],
-            func.get("parameters", {})
+            func.get("parameters", {}),
+            company_id
         )
 
     print("Unhandled message type.")
