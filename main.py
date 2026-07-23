@@ -9,7 +9,7 @@ from db import supabase
 from ai import estimate_duration
 from routes_dashboard import router as dashboard_router
 from routes_settings import router as settings_router
-from routes_settings import get_company_by_vapi_phone_id   # <-- reuse existing helper
+from settings_store import get_company_by_vapi_phone_id   # was: from routes_settings import ...
 
 app = FastAPI()
 app.include_router(settings_router, prefix="/api")
@@ -265,92 +265,71 @@ def handle_tool(tool_name, tool_id, args, company_id):
 
     if tool_name == "book_job":
 
-        start = datetime.fromisoformat(
-            args["scheduled_time"].replace("Z", "+00:00")
-        )
+        estimate = estimate_duration(args["description"])
+        duration = estimate["duration_minutes"]
+        confidence = estimate.get("confidence", 1.0)
 
-        duration = estimate_duration(
-            args["description"]
-        )
+        CONFIDENCE_THRESHOLD = 0.5   # tune this once you see real Gemini output
 
+        if confidence < CONFIDENCE_THRESHOLD:
+            job_type = "estimate_visit"
+            duration = 30   # short fixed visit, not the guessed job duration
+        else:
+            job_type = "standard"
+
+        start = datetime.fromisoformat(args["scheduled_time"].replace("Z", "+00:00"))
         end = start + timedelta(minutes=duration)
 
         jobs = (
             supabase
             .table("jobs")
             .select("scheduled_start_time, scheduled_end_time")
-            .eq("company_id", company_id)   # <-- scoped
+            .eq("company_id", company_id)
             .execute()
         )
 
         for job in jobs.data:
-
-            if (
-                job["scheduled_start_time"] is None
-                or job["scheduled_end_time"] is None
-            ):
+            if job["scheduled_start_time"] is None or job["scheduled_end_time"] is None:
                 continue
-
-            existing_start = datetime.fromisoformat(
-                job["scheduled_start_time"].replace("Z", "+00:00")
-            )
-
-            existing_end = datetime.fromisoformat(
-                job["scheduled_end_time"].replace("Z", "+00:00")
-            )
-
+            existing_start = datetime.fromisoformat(job["scheduled_start_time"].replace("Z", "+00:00"))
+            existing_end = datetime.fromisoformat(job["scheduled_end_time"].replace("Z", "+00:00"))
             if start < existing_end and end > existing_start:
-
-                return {
-                    "results": [
-                        {
-                            "toolCallId": tool_id,
-                            "result": {
-                                "success": False,
-                                "message": "That time overlaps an existing appointment."
-                            }
-                        }
-                    ]
-                }
+                return {"results": [{"toolCallId": tool_id, "result": {
+                    "success": False,
+                    "message": "That time overlaps an existing appointment."
+                }}]}
 
         job = {
-
             "customer_name": args["customer_name"],
             "phone_number": args["phone_number"],
             "address": args["address"],
             "description": args["description"],
-
             "scheduled_start_time": start.isoformat(),
             "scheduled_end_time": end.isoformat(),
-
             "duration_minutes": duration,
-
             "status": "Booked",
             "category": "General",
-            "ai_confidence": 1.0
+            "ai_confidence": confidence,
+            "job_type": job_type,
+            "company_id": company_id,
         }
 
-        job["company_id"] = company_id   # <-- add thi  s line before insert
-        inserted = (
-            supabase
-            .table("jobs")
-            .insert(job)
-            .execute()
+        inserted = supabase.table("jobs").insert(job).execute()
+
+        message = (
+            "I've booked a short visit so we can take a look in person and give you an accurate quote."
+            if job_type == "estimate_visit"
+            else "You're all booked in."
         )
 
         return {
-            "results": [
-                {
-                    "toolCallId": tool_id,
-                    "result": {
-                        "success": True,
-                        "job": inserted.data[0]
-                    }
-                }
-            ],
+            "results": [{"toolCallId": tool_id, "result": {
+                "success": True,
+                "job": inserted.data[0],
+                "message": message,
+            }}],
             "endCall": True
         }
-    
     
     # ------------------------------------------------
     # estimate_duration

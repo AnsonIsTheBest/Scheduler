@@ -1,7 +1,7 @@
 import os
+from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Use environment variables for security! 
-# You can use a .env file for these.
+load_dotenv()
 
-supabase: Client = create_client(os.getenv('SUPABASE_URL'),os.getenv('SUPABASE_KEY'))
+supabase: Client = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))

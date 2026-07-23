@@ -16,6 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel          # <-- add this line
 
 from db import supabase
 from tenant import get_current_company_id
@@ -64,6 +65,8 @@ def serialize_job(row: dict) -> dict:
         "status": normalize_status(row.get("status")),
         "category": row.get("category") or "General",
         "ai_confidence": row.get("ai_confidence") or 0,
+        "job_type": row.get("job_type") or "standard",      # <-- add
+        "parent_job_id": row.get("parent_job_id"),           # <-- add
     }
 
 
@@ -156,13 +159,63 @@ async def get_job(job_id: str, company_id: str = Depends(get_current_company_id)
         supabase.table("jobs")
         .select("*")
         .eq("id", job_id)
-        .eq("company_id", company_id)  # prevents cross-tenant lookup by guessing an id
+        .eq("company_id", company_id)
         .limit(1)
         .execute()
     )
     if not response.data:
         raise HTTPException(status_code=404, detail="Job not found")
     return serialize_job(response.data[0])
+
+
+class ConvertJobRequest(BaseModel):
+    duration_minutes: int
+    scheduled_start_time: str
+
+
+@router.post("/jobs/{job_id}/convert")
+async def convert_estimate_to_job(
+    job_id: str,
+    payload: ConvertJobRequest,
+    company_id: str = Depends(get_current_company_id),
+):
+    original = (
+        supabase.table("jobs")
+        .select("*")
+        .eq("id", job_id)
+        .eq("company_id", company_id)
+        .limit(1)
+        .execute()
+    )
+    if not original.data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    original_job = original.data[0]
+    if original_job.get("job_type") != "estimate_visit":
+        raise HTTPException(status_code=400, detail="Only estimate visits can be converted")
+
+    start = datetime.fromisoformat(payload.scheduled_start_time.replace("Z", "+00:00"))
+    end = start + timedelta(minutes=payload.duration_minutes)
+
+    follow_up = {
+        "customer_name": original_job["customer_name"],
+        "phone_number": original_job["phone_number"],
+        "address": original_job["address"],
+        "description": original_job["description"],
+        "scheduled_start_time": start.isoformat(),
+        "scheduled_end_time": end.isoformat(),
+        "duration_minutes": payload.duration_minutes,
+        "status": "Booked",
+        "category": original_job.get("category") or "General",
+        "ai_confidence": 1.0,
+        "job_type": "follow_up",
+        "parent_job_id": job_id,
+        "company_id": company_id,
+    }
+
+    inserted = supabase.table("jobs").insert(follow_up).execute()
+    return serialize_job(inserted.data[0])
+
 
 
 # ---------------------------------------------------
