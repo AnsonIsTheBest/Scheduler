@@ -2,58 +2,50 @@ import os
 import json
 from dotenv import load_dotenv
 from google import genai
-from pathlib import Path
-
 
 load_dotenv()
-BUSINESS_PROMPT = Path("prompt.txt").read_text()
 
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-def estimate_duration(description: str):
+def estimate_duration(description: str, business_prompt: str = ""):
 
     prompt = f"""
-    {BUSINESS_PROMPT}
+{business_prompt}
 
-    Customer description:
+You are estimating how long a job will take based on a customer's phone description.
 
-    "{description}"
+Customer description:
+"{description}"
 
-    Estimate the duration.
+Estimate the duration in minutes for a typical job like this.
 
-    Return JSON:
+Set "confidence" LOW (below 0.5) if any of these are true:
+- The description is vague, unclear, or missing key details
+- The scope could vary a lot depending on things you can't know over the phone
+- You genuinely cannot tell what's wrong just from what the customer said
 
-    {{
-        "duration_minutes": integer,
-        "confidence": float,
-        "reason": "..."
-    }}
-    """
+Set "confidence" HIGH (0.7 or above) only when the description is specific and clearly a standard job.
+
+When confidence is low, this means an in-person visit is needed before the real job can be scheduled — "duration_minutes" should reflect a short initial inspection visit, not a full-job guess.
+
+Return ONLY valid JSON, no other text:
+{{
+    "duration_minutes": integer,
+    "confidence": float,
+    "reason": "..."
+}}
+"""
 
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt
     )
-    print("========== GEMINI RESPONSE ==========")
-    print(repr(response.text))
-    print("=====================================")
 
-    
     text = response.text.strip()
-
-    # Remove markdown code fences if present
     if text.startswith("```"):
-        lines = text.splitlines()
-
-        # Remove first line (```json)
-        lines = lines[1:]
-
-        # Remove last line (```)
+        lines = text.splitlines()[1:]
         if lines[-1].startswith("```"):
             lines = lines[:-1]
-
         text = "\n".join(lines)
 
     return json.loads(text)

@@ -10,6 +10,7 @@ from ai import estimate_duration
 from routes_dashboard import router as dashboard_router
 from routes_settings import router as settings_router
 from settings_store import get_company_by_vapi_phone_id   # was: from routes_settings import ...
+from settings_store import get_settings
 
 app = FastAPI()
 app.include_router(settings_router, prefix="/api")
@@ -264,8 +265,8 @@ def handle_tool(tool_name, tool_id, args, company_id):
     # ------------------------------------------------
 
     if tool_name == "book_job":
-
-        estimate = estimate_duration(args["description"])
+        settings = get_settings(company_id)
+        estimate = estimate_duration(args["description"], settings.get("estimation_prompt", ""))
         duration = estimate["duration_minutes"]
         confidence = estimate.get("confidence", 1.0)
 
