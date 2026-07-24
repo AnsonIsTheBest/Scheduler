@@ -9,8 +9,7 @@ from db import supabase
 from ai import estimate_duration
 from routes_dashboard import router as dashboard_router
 from routes_settings import router as settings_router
-from settings_store import get_company_by_vapi_phone_id   # was: from routes_settings import ...
-from settings_store import get_settings
+from settings_store import get_company_by_vapi_phone_id, get_company, get_settings
 
 app = FastAPI()
 app.include_router(settings_router, prefix="/api")
@@ -369,35 +368,56 @@ def handle_tool(tool_name, tool_id, args, company_id):
 
 @app.post("/vapi-webhook")
 async def vapi_webhook(request: Request):
-
     secret = request.headers.get("X-Webhook-Secret")
-
     if secret != os.getenv("WEBHOOK_SECRET"):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     raw = await request.body()
-
-    print("\n")
-    print("=" * 70)
-    ##print("RAW REQUEST")
-    ##print(raw.decode("utf-8", errors="replace"))
-    print("=" * 70)
-
     try:
         payload = json.loads(raw)
-
     except Exception as e:
-
-        print("JSON Error:", e)
-
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-    print(json.dumps(payload, indent=2))
+        return {"status": "error", "message": str(e)}
 
     message = payload.get("message", {})
     message_type = message.get("type")
+
+    # ------------------------------------------------
+    # ASSISTANT REQUEST — fires before the call connects,
+    # tells Vapi which assistant + business variables to use
+    # ------------------------------------------------
+    if message_type == "assistant-request":
+        phone_number_id = message.get("phoneNumber", {}).get("id") or message.get("call", {}).get("phoneNumberId")
+
+        if not phone_number_id:
+            print("ERROR: assistant-request with no phoneNumberId")
+            return {"error": "Could not identify business for this number."}
+
+        company = get_company_by_vapi_phone_id(phone_number_id)
+        if not company:
+            print(f"ERROR: no company found for phoneNumberId={phone_number_id}")
+            return {"error": "Could not identify business for this number."}
+
+        settings = get_settings(company["id"])
+
+        hours_start = settings.get("business_hours_start", 8)
+        hours_end = settings.get("business_hours_end", 17)
+
+        def format_hour(h):
+            period = "AM" if h < 12 else "PM"
+            hour12 = h if 1 <= h <= 12 else abs(h - 12) or 12
+            return f"{hour12}{period}"
+
+        return {
+            "assistantId": os.getenv("VAPI_SHARED_ASSISTANT_ID"),
+            "assistantOverrides": {
+                "variableValues": {
+                    "business_name": company.get("name") or "the business",
+                    "business_address": company.get("address") or "",
+                    "business_hours": f"{format_hour(hours_start)} to {format_hour(hours_end)}",
+                    "estimation_context": settings.get("estimation_prompt", ""),
+                }
+            }
+        }
     call = message.get("call", {})
     phone_number_id = call.get("phoneNumberId")
     print("Message Type:", message_type)
